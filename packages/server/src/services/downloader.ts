@@ -31,12 +31,21 @@ export async function proxyDownload(params: {
 
   const safeName = sanitizeFilename(filename) || "video";
   const ext = safeName.endsWith(".mp4") ? "" : ".mp4";
+  const fullName = safeName + ext;
+
+  // Content-Disposition has two forms:
+  //   filename="..."         — legacy, MUST be ASCII-only (RFC 6266 / ByteString)
+  //   filename*=UTF-8''...   — RFC 5987, carries the real Unicode name
+  // Modern browsers prefer filename*, but we still need an ASCII fallback for
+  // the legacy parameter because Node's fetch Headers refuse non-ASCII bytes.
+  const asciiFallback =
+    fullName.replace(/[^\x20-\x7e]/g, "_").replace(/_+/g, "_") || "video.mp4";
 
   const responseHeaders = new Headers();
   responseHeaders.set("Content-Type", "video/mp4");
   responseHeaders.set(
     "Content-Disposition",
-    `attachment; filename="${safeName}${ext}"; filename*=UTF-8''${encodeURIComponent(safeName + ext)}`,
+    `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(fullName)}`,
   );
 
   // Forward content-length if available
