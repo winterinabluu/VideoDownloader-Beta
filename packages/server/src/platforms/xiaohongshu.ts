@@ -33,16 +33,25 @@ export const xiaohongshuParser: PlatformParser = {
   },
 
   async parse(url: string, config: AppConfig): Promise<VideoParseResult> {
+    const cookie = config.cookies.xiaohongshu;
+    if (!cookie) {
+      throw new AppError(
+        ErrorCodes.LOGIN_REQUIRED,
+        "Xiaohongshu requires browser cookies to access notes. Please set XIAOHONGSHU_COOKIE in your .env file. See README for instructions.",
+      );
+    }
+
     // Step 1: Follow short link redirects
     let finalUrl = url;
     const u = new URL(url);
 
     if (u.hostname === "xhslink.com") {
-      finalUrl = await followRedirect(url);
+      finalUrl = await followRedirect(url, cookie);
     }
 
-    // Step 2: Extract note ID
-    const noteIdMatch = finalUrl.match(NOTE_ID_PATTERN);
+    // Step 2: Extract note ID and preserve query params (xsec_token etc.)
+    const parsedUrl = new URL(finalUrl);
+    const noteIdMatch = parsedUrl.pathname.match(NOTE_ID_PATTERN);
     if (!noteIdMatch) {
       throw new AppError(ErrorCodes.INVALID_URL, "Cannot extract note ID from URL", {
         detail: finalUrl,
@@ -50,9 +59,13 @@ export const xiaohongshuParser: PlatformParser = {
     }
     const noteId = noteIdMatch[1];
 
-    // Step 3: Fetch the page HTML and extract SSR data
-    const pageUrl = `https://www.xiaohongshu.com/explore/${noteId}`;
-    const cookie = config.cookies.xiaohongshu;
+    // Step 3: Fetch the page HTML with cookies and original query params
+    // xsec_token is bound to the user's session, must be forwarded
+    const pageUrl = new URL(`https://www.xiaohongshu.com/explore/${noteId}`);
+    const xsecToken = parsedUrl.searchParams.get("xsec_token");
+    const xsecSource = parsedUrl.searchParams.get("xsec_source");
+    if (xsecToken) pageUrl.searchParams.set("xsec_token", xsecToken);
+    if (xsecSource) pageUrl.searchParams.set("xsec_source", xsecSource);
 
     const headers: Record<string, string> = {
       "User-Agent": DEFAULT_UA,
@@ -60,32 +73,42 @@ export const xiaohongshuParser: PlatformParser = {
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
       Referer: "https://www.xiaohongshu.com/",
+      Cookie: cookie,
     };
-    if (cookie) {
-      headers["Cookie"] = cookie;
+
+    const resp = await fetch(pageUrl.toString(), { headers, redirect: "follow" });
+
+    // Check if redirected to 404/security page
+    const responseUrl = resp.url;
+    if (responseUrl.includes("/404") || responseUrl.includes("sec_")) {
+      throw new AppError(
+        ErrorCodes.PARSE_FAILED,
+        "Xiaohongshu blocked the request. This usually means the cookie has expired or the xsec_token is invalid. Please refresh your browser cookies.",
+        { detail: `Redirected to: ${responseUrl}` },
+      );
     }
 
-    const resp = await fetch(pageUrl, { headers, redirect: "follow" });
     if (!resp.ok) {
       throw new AppError(ErrorCodes.PARSE_FAILED, `Failed to fetch page: ${resp.status}`, {
-        detail: pageUrl,
+        detail: pageUrl.toString(),
       });
     }
 
     const html = await resp.text();
-    return extractVideoFromHtml(html, noteId, pageUrl);
+    return extractVideoFromHtml(html, noteId, url);
   },
 };
 
 /**
  * Follow redirect to get the final URL from short links.
  */
-async function followRedirect(url: string): Promise<string> {
+async function followRedirect(url: string, cookie: string): Promise<string> {
   const resp = await fetch(url, {
     method: "GET",
     redirect: "follow",
     headers: {
       "User-Agent": DEFAULT_UA,
+      Cookie: cookie,
     },
   });
   return resp.url;
@@ -102,7 +125,7 @@ function extractVideoFromHtml(
 ): VideoParseResult {
   // Try to extract __INITIAL_STATE__ JSON
   const stateMatch = html.match(
-    /window\.__INITIAL_STATE__\s*=\s*({.+?})\s*<\/script>/s,
+    /window\.__INITIAL_STATE__\s*=\s*({[\s\S]+?})\s*<\/script>/,
   );
 
   let title: string | undefined;
@@ -112,45 +135,78 @@ function extractVideoFromHtml(
 
   if (stateMatch) {
     try {
-      // The JSON may contain unicode-escaped characters
+      // The JSON may contain unicode-escaped characters and JS-specific tokens
       const jsonStr = stateMatch[1]
         .replace(/undefined/g, "null")
         .replace(/\\u002F/g, "/");
       const state = JSON.parse(jsonStr);
 
-      // Navigate the state structure
-      const noteDetail =
-        state?.note?.noteDetailMap?.[noteId] ??
-        state?.note?.note;
-      const note = noteDetail?.note ?? noteDetail;
+      // Navigate the state structure - try multiple paths
+      const noteDetailMap = state?.note?.noteDetailMap;
+      let note: any = null;
+
+      if (noteDetailMap) {
+        // Try exact noteId first, then iterate all keys
+        const detail = noteDetailMap[noteId];
+        if (detail?.note) {
+          note = detail.note;
+        } else {
+          // Sometimes the key format differs, check all entries
+          for (const key of Object.keys(noteDetailMap)) {
+            if (key === "null" || key === "undefined") continue;
+            const entry = noteDetailMap[key];
+            if (entry?.note?.type === "video" || entry?.note?.video) {
+              note = entry.note;
+              break;
+            }
+          }
+        }
+      }
+
+      // Alternative path in state
+      if (!note && state?.noteData?.note) {
+        note = state.noteData.note;
+      }
 
       if (note) {
         title = note.title || note.desc;
         author = note.user?.nickname || note.user?.name;
-        coverUrl = note.imageList?.[0]?.urlDefault;
+        coverUrl =
+          note.imageList?.[0]?.urlDefault ??
+          note.imageList?.[0]?.url;
 
-        // Extract video key for watermark-free URL
+        // Extract video key for watermark-free URL — try multiple paths
         const originVideoKey =
           note.video?.consumer?.originVideoKey ??
-          note.video?.media?.stream?.h264?.[0]?.masterUrl;
+          note.video?.media?.stream?.h264?.[0]?.masterUrl ??
+          note.video?.media?.stream?.h265?.[0]?.masterUrl;
 
         if (originVideoKey) {
-          // If it's already a full URL, use it directly
           if (originVideoKey.startsWith("http")) {
             videoUrl = originVideoKey;
           } else {
             videoUrl = VIDEO_CDN_HOSTS[0] + originVideoKey;
           }
         }
+
+        // Try additional video URL paths
+        if (!videoUrl) {
+          const videoAddr =
+            note.video?.url ??
+            note.video?.firstFrameUrl ??
+            note.video?.media?.videoPlayInfo?.url;
+          if (videoAddr && videoAddr.startsWith("http")) {
+            videoUrl = videoAddr;
+          }
+        }
       }
     } catch {
-      // JSON parse failed, fall through to meta tag extraction
+      // JSON parse failed, fall through to regex extraction
     }
   }
 
-  // Fallback: extract from meta tags
+  // Fallback: extract originVideoKey via regex from raw HTML
   if (!videoUrl) {
-    // Try originVideoKey from raw HTML
     const keyMatch = html.match(/"originVideoKey"\s*:\s*"([^"]+)"/);
     if (keyMatch) {
       const key = keyMatch[1].replace(/\\u002F/g, "/");
@@ -158,7 +214,17 @@ function extractVideoFromHtml(
     }
   }
 
-  // Another fallback: og:video meta tag (this one has watermark)
+  // Fallback: look for video URL patterns in HTML
+  if (!videoUrl) {
+    const cdnMatch = html.match(
+      /https?:\/\/sns-video-[a-z]+\.xhscdn\.com\/[^\s"'<]+\.mp4[^\s"'<]*/,
+    );
+    if (cdnMatch) {
+      videoUrl = cdnMatch[0];
+    }
+  }
+
+  // Another fallback: og:video meta tag (this one typically has watermark)
   let ogVideoUrl: string | undefined;
   const ogMatch = html.match(
     /<meta\s+property="og:video"\s+content="([^"]+)"/i,
@@ -192,7 +258,7 @@ function extractVideoFromHtml(
   if (!videoUrl && !ogVideoUrl) {
     throw new AppError(
       ErrorCodes.VIDEO_NOT_FOUND,
-      "This note does not contain a video, or the video could not be extracted",
+      "This note does not contain a video, or the video could not be extracted. Make sure the link is a video note (not an image note) and your cookies are valid.",
     );
   }
 
@@ -200,7 +266,7 @@ function extractVideoFromHtml(
 
   if (videoUrl) {
     videos.push({
-      qualityLabel: "原始画质 (无水印)",
+      qualityLabel: "Original (no watermark)",
       format: "mp4",
       hasAudio: true,
       hasVideo: true,
@@ -211,7 +277,7 @@ function extractVideoFromHtml(
 
   if (ogVideoUrl && ogVideoUrl !== videoUrl) {
     videos.push({
-      qualityLabel: "标准画质 (有水印)",
+      qualityLabel: "Standard (watermarked)",
       format: "mp4",
       hasAudio: true,
       hasVideo: true,
