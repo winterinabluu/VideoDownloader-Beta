@@ -1,5 +1,3 @@
-import { URL } from "url";
-
 const PRIVATE_IP_RANGES = [
   /^127\./,
   /^10\./,
