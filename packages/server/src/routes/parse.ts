@@ -4,6 +4,7 @@ import { validateUrl, ErrorCodes } from "@vd/shared";
 import { AppError } from "../errors.js";
 import { detectPlatform } from "../platforms/registry.js";
 import { config } from "../config.js";
+import { createDownloadToken } from "../services/tokenStore.js";
 
 const app = new Hono();
 
@@ -38,7 +39,25 @@ app.post("/", async (c) => {
   }
 
   const result = await detected.parser.parse(urlStr, config);
-  return c.json({ ok: true, data: result });
+
+  // Replace raw video URLs with download tokens for security
+  const filename = result.title ?? `video_${Date.now()}`;
+  const videosWithTokens = result.videos.map((v) => {
+    const token = createDownloadToken({
+      videoUrl: v.url,
+      platform: result.platform,
+      filename: `${filename}_${v.qualityLabel}`,
+    });
+    return {
+      ...v,
+      url: `/api/download?token=${token}`,
+    };
+  });
+
+  return c.json({
+    ok: true,
+    data: { ...result, videos: videosWithTokens },
+  });
 });
 
 export { app as parseRoute };
