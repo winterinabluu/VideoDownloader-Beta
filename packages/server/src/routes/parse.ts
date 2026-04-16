@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import type { ParseRequest } from "@vd/shared";
 import { validateUrl, ErrorCodes } from "@vd/shared";
 import { AppError } from "../errors.js";
+import { detectPlatform } from "../platforms/registry.js";
+import { config } from "../config.js";
 
 const app = new Hono();
 
@@ -15,8 +17,10 @@ app.post("/", async (c) => {
     );
   }
 
+  const urlStr = body.url.trim();
+
   try {
-    validateUrl(body.url);
+    validateUrl(urlStr);
   } catch (err) {
     throw new AppError(
       ErrorCodes.INVALID_URL,
@@ -24,12 +28,17 @@ app.post("/", async (c) => {
     );
   }
 
-  // TODO: dispatch to platform parser (implemented in next task)
-  throw new AppError(
-    ErrorCodes.UNSUPPORTED_PLATFORM,
-    "Platform parsers not yet implemented",
-    { detail: body.url },
-  );
+  const detected = detectPlatform(urlStr);
+  if (!detected) {
+    throw new AppError(
+      ErrorCodes.UNSUPPORTED_PLATFORM,
+      "This URL is not from a supported platform",
+      { detail: urlStr },
+    );
+  }
+
+  const result = await detected.parser.parse(urlStr, config);
+  return c.json({ ok: true, data: result });
 });
 
 export { app as parseRoute };
