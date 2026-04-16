@@ -1,4 +1,4 @@
-import type { VideoParseResult } from "@vd/shared";
+import type { VideoParseResult, VideoVariant } from "@vd/shared";
 import type { PlatformParser } from "./base.js";
 import type { AppConfig } from "../config.js";
 import { AppError } from "../errors.js";
@@ -11,13 +11,11 @@ const XHS_HOST_PATTERNS = [
 
 const NOTE_ID_PATTERN = /\/(?:explore|discovery\/item)\/([a-f0-9]+)/i;
 
-const DEFAULT_UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
-
-const VIDEO_CDN_HOSTS = [
-  "https://sns-video-bd.xhscdn.com/",
-  "https://sns-video-hw.xhscdn.com/",
-];
+// Mobile UA is required — the desktop UA triggers a redirect to the 404 / security
+// page on xiaohongshu.com/discovery/item/*. The H5 (mobile) site is what the
+// share-link flow is built for, and it embeds the stream URLs we need.
+const MOBILE_UA =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1";
 
 export const xiaohongshuParser: PlatformParser = {
   name: "xiaohongshu",
@@ -41,15 +39,16 @@ export const xiaohongshuParser: PlatformParser = {
       );
     }
 
-    // Step 1: Follow short link redirects
+    // Step 1: Follow short-link redirects without cookies — we only want the final
+    // URL with a fresh xsec_token. The redirect chain sets no cookies of its own.
     let finalUrl = url;
     const u = new URL(url);
 
     if (u.hostname === "xhslink.com") {
-      finalUrl = await followRedirect(url, cookie);
+      finalUrl = await followRedirect(url);
     }
 
-    // Step 2: Extract note ID and preserve query params (xsec_token etc.)
+    // Step 2: Pull the note ID out of the resolved URL.
     const parsedUrl = new URL(finalUrl);
     const noteIdMatch = parsedUrl.pathname.match(NOTE_ID_PATTERN);
     if (!noteIdMatch) {
@@ -59,16 +58,11 @@ export const xiaohongshuParser: PlatformParser = {
     }
     const noteId = noteIdMatch[1];
 
-    // Step 3: Fetch the page HTML with cookies and original query params
-    // xsec_token is bound to the user's session, must be forwarded
-    const pageUrl = new URL(`https://www.xiaohongshu.com/explore/${noteId}`);
-    const xsecToken = parsedUrl.searchParams.get("xsec_token");
-    const xsecSource = parsedUrl.searchParams.get("xsec_source");
-    if (xsecToken) pageUrl.searchParams.set("xsec_token", xsecToken);
-    if (xsecSource) pageUrl.searchParams.set("xsec_source", xsecSource);
+    // Step 3: Fetch the mobile H5 page with cookies + the share's xsec params.
+    const pageUrl = new URL(finalUrl);
 
     const headers: Record<string, string> = {
-      "User-Agent": DEFAULT_UA,
+      "User-Agent": MOBILE_UA,
       Accept:
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -78,9 +72,19 @@ export const xiaohongshuParser: PlatformParser = {
 
     const resp = await fetch(pageUrl.toString(), { headers, redirect: "follow" });
 
-    // Check if redirected to 404/security page
     const responseUrl = resp.url;
-    if (responseUrl.includes("/404") || responseUrl.includes("sec_")) {
+    const responsePath = (() => {
+      try {
+        return new URL(responseUrl).pathname;
+      } catch {
+        return "";
+      }
+    })();
+    if (
+      responsePath.includes("/404") ||
+      /\/sec[-_]check/i.test(responsePath) ||
+      /\/verify/i.test(responsePath)
+    ) {
       throw new AppError(
         ErrorCodes.PARSE_FAILED,
         "Xiaohongshu blocked the request. This usually means the cookie has expired or the xsec_token is invalid. Please refresh your browser cookies.",
@@ -101,29 +105,36 @@ export const xiaohongshuParser: PlatformParser = {
 
 /**
  * Follow redirect to get the final URL from short links.
+ * No cookies — we just need the 302 chain and its fresh xsec_token.
  */
-async function followRedirect(url: string, cookie: string): Promise<string> {
+async function followRedirect(url: string): Promise<string> {
   const resp = await fetch(url, {
     method: "GET",
     redirect: "follow",
-    headers: {
-      "User-Agent": DEFAULT_UA,
-      Cookie: cookie,
-    },
+    headers: { "User-Agent": MOBILE_UA },
   });
   return resp.url;
 }
 
-/**
- * Extract video info from the page HTML.
- * The page contains server-rendered JSON with video data.
- */
+interface XhsStreamEntry {
+  masterUrl?: string;
+  backupUrls?: string[];
+  width?: number;
+  height?: number;
+  videoBitrate?: number;
+  avgBitrate?: number;
+  size?: number;
+  format?: string;
+  qualityType?: string;
+  streamType?: number;
+  videoCodec?: string;
+}
+
 function extractVideoFromHtml(
   html: string,
   noteId: string,
   sourceUrl: string,
 ): VideoParseResult {
-  // Try to extract __INITIAL_STATE__ JSON
   const stateMatch = html.match(
     /window\.__INITIAL_STATE__\s*=\s*({[\s\S]+?})\s*<\/script>/,
   );
@@ -131,122 +142,138 @@ function extractVideoFromHtml(
   let title: string | undefined;
   let author: string | undefined;
   let coverUrl: string | undefined;
-  let videoUrl: string | undefined;
+  let duration: number | undefined;
+  const variants: VideoVariant[] = [];
 
   if (stateMatch) {
     try {
-      // The JSON may contain unicode-escaped characters and JS-specific tokens
-      const jsonStr = stateMatch[1]
-        .replace(/undefined/g, "null")
-        .replace(/\\u002F/g, "/");
+      // The embedded JSON uses JS `undefined` tokens which are invalid JSON.
+      const jsonStr = stateMatch[1].replace(/:\s*undefined\b/g, ":null");
       const state = JSON.parse(jsonStr);
 
-      // Navigate the state structure - try multiple paths
-      const noteDetailMap = state?.note?.noteDetailMap;
-      let note: any = null;
+      // Mobile H5 layout (current): state.noteData.data.noteData
+      let note: any = state?.noteData?.data?.noteData;
 
-      if (noteDetailMap) {
-        // Try exact noteId first, then iterate all keys
-        const detail = noteDetailMap[noteId];
-        if (detail?.note) {
-          note = detail.note;
-        } else {
-          // Sometimes the key format differs, check all entries
-          for (const key of Object.keys(noteDetailMap)) {
-            if (key === "null" || key === "undefined") continue;
-            const entry = noteDetailMap[key];
-            if (entry?.note?.type === "video" || entry?.note?.video) {
-              note = entry.note;
-              break;
+      // Desktop SSR layout (legacy): state.note.noteDetailMap[noteId].note
+      if (!note) {
+        const noteDetailMap = state?.note?.noteDetailMap;
+        if (noteDetailMap) {
+          const detail = noteDetailMap[noteId];
+          if (detail?.note) {
+            note = detail.note;
+          } else {
+            for (const key of Object.keys(noteDetailMap)) {
+              if (key === "null" || key === "undefined") continue;
+              const entry = noteDetailMap[key];
+              if (entry?.note?.type === "video" || entry?.note?.video) {
+                note = entry.note;
+                break;
+              }
             }
           }
         }
       }
 
-      // Alternative path in state
-      if (!note && state?.noteData?.note) {
-        note = state.noteData.note;
-      }
-
       if (note) {
         title = note.title || note.desc;
-        author = note.user?.nickname || note.user?.name;
+        author =
+          note.user?.nickName ||
+          note.user?.nickname ||
+          note.user?.name ||
+          note.user?.userNickname;
+
         coverUrl =
+          note.cover?.urlDefault ??
+          note.cover?.url ??
           note.imageList?.[0]?.urlDefault ??
           note.imageList?.[0]?.url;
 
-        // Extract video key for watermark-free URL — try multiple paths
-        const originVideoKey =
-          note.video?.consumer?.originVideoKey ??
-          note.video?.media?.stream?.h264?.[0]?.masterUrl ??
-          note.video?.media?.stream?.h265?.[0]?.masterUrl;
+        duration =
+          note.video?.capa?.duration ??
+          note.video?.media?.video?.duration;
 
-        if (originVideoKey) {
-          if (originVideoKey.startsWith("http")) {
-            videoUrl = originVideoKey;
-          } else {
-            videoUrl = VIDEO_CDN_HOSTS[0] + originVideoKey;
+        const stream = note.video?.media?.stream;
+        if (stream && typeof stream === "object") {
+          // h264 first (broadest compatibility), then h265 for smaller file.
+          const order: Array<keyof typeof stream> = [
+            "h264",
+            "h265",
+            "h266",
+            "av1",
+          ];
+          for (const codec of order) {
+            const arr = stream[codec] as XhsStreamEntry[] | undefined;
+            if (!Array.isArray(arr)) continue;
+            for (const entry of arr) {
+              const u = pickStreamUrl(entry);
+              if (!u) continue;
+              variants.push({
+                qualityLabel: buildQualityLabel(codec as string, entry),
+                format: (entry.format as any) || "mp4",
+                url: u,
+                width: entry.width,
+                height: entry.height,
+                bitrate: entry.videoBitrate ?? entry.avgBitrate,
+                size: entry.size,
+                hasVideo: true,
+                hasAudio: true,
+                isWatermarked: false,
+              });
+            }
           }
         }
 
-        // Try additional video URL paths
-        if (!videoUrl) {
-          const videoAddr =
-            note.video?.url ??
-            note.video?.firstFrameUrl ??
-            note.video?.media?.videoPlayInfo?.url;
-          if (videoAddr && videoAddr.startsWith("http")) {
-            videoUrl = videoAddr;
+        // Legacy originVideoKey path — only used when the new stream path is empty.
+        if (variants.length === 0) {
+          const legacyKey = note.video?.consumer?.originVideoKey;
+          if (typeof legacyKey === "string" && legacyKey.length > 0) {
+            const legacyUrl = legacyKey.startsWith("http")
+              ? legacyKey
+              : "https://sns-video-bd.xhscdn.com/" + legacyKey;
+            variants.push({
+              qualityLabel: "Original",
+              format: "mp4",
+              url: legacyUrl,
+              hasVideo: true,
+              hasAudio: true,
+              isWatermarked: false,
+            });
           }
         }
       }
     } catch {
-      // JSON parse failed, fall through to regex extraction
+      // Fall through to regex-based fallbacks.
     }
   }
 
-  // Fallback: extract originVideoKey via regex from raw HTML
-  if (!videoUrl) {
-    const keyMatch = html.match(/"originVideoKey"\s*:\s*"([^"]+)"/);
-    if (keyMatch) {
-      const key = keyMatch[1].replace(/\\u002F/g, "/");
-      videoUrl = VIDEO_CDN_HOSTS[0] + key;
-    }
-  }
-
-  // Fallback: look for video URL patterns in HTML
-  if (!videoUrl) {
+  // Fallback: pull any CDN mp4 URL out of the raw HTML.
+  if (variants.length === 0) {
     const cdnMatch = html.match(
-      /https?:\/\/sns-video-[a-z]+\.xhscdn\.com\/[^\s"'<]+\.mp4[^\s"'<]*/,
+      /https?:\/\/sns-video-[a-z0-9]+\.xhscdn\.com\/[^\s"'<\\]+\.mp4[^\s"'<\\]*/,
     );
     if (cdnMatch) {
-      videoUrl = cdnMatch[0];
+      variants.push({
+        qualityLabel: "Default",
+        format: "mp4",
+        url: cdnMatch[0],
+        hasVideo: true,
+        hasAudio: true,
+        isWatermarked: false,
+      });
     }
   }
 
-  // Another fallback: og:video meta tag (this one typically has watermark)
-  let ogVideoUrl: string | undefined;
-  const ogMatch = html.match(
-    /<meta\s+property="og:video"\s+content="([^"]+)"/i,
-  );
-  if (ogMatch) {
-    ogVideoUrl = ogMatch[1].replace(/&amp;/g, "&");
-  }
-
+  // Meta-tag fallback for title/cover if JSON extraction missed them.
   if (!title) {
     const titleMatch = html.match(
       /<meta\s+(?:property="og:title"|name="title")\s+content="([^"]+)"/i,
     );
     title = titleMatch?.[1];
   }
-
   if (!author) {
-    const authorMatch = html.match(
-      /<meta\s+name="author"\s+content="([^"]+)"/i,
-    );
+    const authorMatch = html.match(/<meta\s+name="author"\s+content="([^"]+)"/i);
     author = authorMatch?.[1];
   }
-
   if (!coverUrl) {
     const coverMatch = html.match(
       /<meta\s+property="og:image"\s+content="([^"]+)"/i,
@@ -254,37 +281,37 @@ function extractVideoFromHtml(
     coverUrl = coverMatch?.[1];
   }
 
-  // Determine final video situation
-  if (!videoUrl && !ogVideoUrl) {
+  // og:video is the watermarked share-preview URL — include as last-resort only.
+  if (variants.length === 0) {
+    const ogMatch = html.match(
+      /<meta\s+property="og:video"\s+content="([^"]+)"/i,
+    );
+    if (ogMatch) {
+      variants.push({
+        qualityLabel: "Standard (watermarked)",
+        format: "mp4",
+        url: ogMatch[1].replace(/&amp;/g, "&"),
+        hasVideo: true,
+        hasAudio: true,
+        isWatermarked: true,
+      });
+    }
+  }
+
+  if (variants.length === 0) {
     throw new AppError(
       ErrorCodes.VIDEO_NOT_FOUND,
       "This note does not contain a video, or the video could not be extracted. Make sure the link is a video note (not an image note) and your cookies are valid.",
     );
   }
 
-  const videos: VideoParseResult["videos"] = [];
+  // Sort by bitrate desc so the highest quality is presented first.
+  variants.sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
 
-  if (videoUrl) {
-    videos.push({
-      qualityLabel: "Original (no watermark)",
-      format: "mp4",
-      hasAudio: true,
-      hasVideo: true,
-      url: videoUrl,
-      isWatermarked: false,
-    });
-  }
-
-  if (ogVideoUrl && ogVideoUrl !== videoUrl) {
-    videos.push({
-      qualityLabel: "Standard (watermarked)",
-      format: "mp4",
-      hasAudio: true,
-      hasVideo: true,
-      url: ogVideoUrl,
-      isWatermarked: true,
-    });
-  }
+  const anyClean = variants.some((v) => !v.isWatermarked);
+  const watermarkStatus: VideoParseResult["watermarkStatus"] = anyClean
+    ? "no_watermark"
+    : "watermarked";
 
   return {
     platform: "xiaohongshu",
@@ -292,7 +319,28 @@ function extractVideoFromHtml(
     title,
     author,
     coverUrl,
-    watermarkStatus: videoUrl ? "no_watermark" : "watermarked",
-    videos,
+    duration,
+    watermarkStatus,
+    videos: variants,
   };
+}
+
+function pickStreamUrl(entry: XhsStreamEntry): string | undefined {
+  const candidates = [entry.masterUrl, ...(entry.backupUrls ?? [])];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.length > 0) {
+      // Prefer https where the server offers it.
+      return c.startsWith("http://") ? c.replace(/^http:/, "https:") : c;
+    }
+  }
+  return undefined;
+}
+
+function buildQualityLabel(codec: string, entry: XhsStreamEntry): string {
+  const codecLabel = codec.toUpperCase();
+  const res =
+    entry.height && entry.width
+      ? `${Math.min(entry.width, entry.height)}p`
+      : entry.qualityType || "";
+  return [res, codecLabel].filter(Boolean).join(" · ");
 }
