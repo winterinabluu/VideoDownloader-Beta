@@ -20,6 +20,58 @@ const BEARER_TOKEN =
 const DEFAULT_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
+// Current queryId — extracted from x.com production JS bundle.
+// Twitter rotates these periodically; the dynamic resolver below handles rotation.
+let cachedQueryId = "fHLDP3qFEjnTqhWBVvsREg";
+
+// Feature flags required by the current TweetResultByRestId endpoint.
+// Must stay in sync with x.com's client; mismatches return empty results.
+const FEATURES = {
+  creator_subscriptions_tweet_preview_api_enabled: true,
+  premium_content_api_read_enabled: true,
+  communities_web_enable_tweet_community_results_fetch: true,
+  c9s_tweet_anatomy_moderator_badge_enabled: true,
+  responsive_web_grok_analyze_button_fetch_trends_enabled: false,
+  responsive_web_grok_analyze_post_followups_enabled: false,
+  responsive_web_jetfuel_frame: false,
+  responsive_web_grok_share_attachment_enabled: false,
+  responsive_web_grok_annotations_enabled: false,
+  articles_preview_enabled: true,
+  responsive_web_edit_tweet_api_enabled: true,
+  graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
+  view_counts_everywhere_api_enabled: true,
+  longform_notetweets_consumption_enabled: true,
+  responsive_web_twitter_article_tweet_consumption_enabled: true,
+  content_disclosure_indicator_enabled: false,
+  content_disclosure_ai_generated_indicator_enabled: false,
+  responsive_web_grok_show_grok_translated_post: false,
+  responsive_web_grok_analysis_button_from_backend: false,
+  post_ctas_fetch_enabled: false,
+  rweb_cashtags_enabled: false,
+  freedom_of_speech_not_reach_fetch_enabled: true,
+  standardized_nudges_misinfo: true,
+  tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
+  longform_notetweets_rich_text_read_enabled: true,
+  longform_notetweets_inline_media_enabled: true,
+  profile_label_improvements_pcf_label_in_post_enabled: false,
+  responsive_web_profile_redirect_enabled: false,
+  rweb_tipjar_consumption_enabled: false,
+  verified_phone_label_enabled: false,
+  responsive_web_grok_image_annotation_enabled: false,
+  responsive_web_grok_imagine_annotation_enabled: false,
+  responsive_web_grok_community_note_auto_translation_is_enabled: false,
+  responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
+  responsive_web_graphql_timeline_navigation_enabled: true,
+  responsive_web_enhance_cards_enabled: false,
+};
+
+const FIELD_TOGGLES = {
+  withArticleRichContentState: false,
+  withArticlePlainText: false,
+  withGrokAnalyze: false,
+  withDisallowedReplyControls: false,
+};
+
 interface TwitterVariant {
   bitrate?: number;
   content_type: string;
@@ -58,13 +110,15 @@ export const twitterParser: PlatformParser = {
     }
     const tweetId = pathMatch[1];
 
-    // Try cookie-based approach first, fall back to guest token
     const cookie = config.cookies.twitter;
-    const tweetData = cookie
-      ? await fetchWithCookie(tweetId, cookie)
-      : await fetchWithGuestToken(tweetId);
+    if (!cookie) {
+      throw new AppError(
+        ErrorCodes.PARSE_FAILED,
+        "Twitter requires cookie authentication. Set the TWITTER_COOKIE environment variable with your auth_token and ct0 values.",
+      );
+    }
 
-    return tweetData;
+    return fetchWithCookie(tweetId, cookie);
   },
 };
 
@@ -72,7 +126,6 @@ async function fetchWithCookie(
   tweetId: string,
   cookie: string,
 ): Promise<VideoParseResult> {
-  // Extract csrf token from cookie
   const ctMatch = cookie.match(/ct0=([^;]+)/);
   const csrfToken = ctMatch?.[1] ?? "";
 
@@ -83,35 +136,14 @@ async function fetchWithCookie(
     withVoice: false,
   });
 
-  const features = JSON.stringify({
-    creator_subscriptions_tweet_preview_api_enabled: true,
-    communities_web_enable_tweet_community_results_fetch: true,
-    c9s_tweet_anatomy_moderator_badge_enabled: true,
-    articles_preview_enabled: true,
-    responsive_web_edit_tweet_api_enabled: true,
-    graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
-    view_counts_everywhere_api_enabled: true,
-    longform_notetweets_consumption_enabled: true,
-    responsive_web_twitter_article_tweet_consumption_enabled: true,
-    tweet_awards_web_tipping_enabled: false,
-    creator_subscriptions_quote_tweet_preview_enabled: false,
-    freedom_of_speech_not_reach_fetch_enabled: true,
-    standardized_nudges_misinfo: true,
-    tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled:
-      true,
-    rweb_video_timestamps_enabled: true,
-    longform_notetweets_rich_text_read_enabled: true,
-    longform_notetweets_inline_media_enabled: true,
-    responsive_web_enhance_cards_enabled: false,
-    responsive_web_graphql_exclude_directive_enabled: true,
-    verified_phone_label_enabled: false,
-    responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
-    responsive_web_graphql_timeline_navigation_enabled: true,
-    responsive_web_media_download_video_enabled: true,
+  const params = new URLSearchParams({
+    variables,
+    features: JSON.stringify(FEATURES),
+    fieldToggles: JSON.stringify(FIELD_TOGGLES),
   });
 
-  const params = new URLSearchParams({ variables, features });
-  const apiUrl = `https://x.com/i/api/graphql/xOhkmRac04YFZDOzVHpekA/TweetResultByRestId?${params}`;
+  const queryId = cachedQueryId;
+  const apiUrl = `https://x.com/i/api/graphql/${queryId}/TweetResultByRestId?${params}`;
 
   const resp = await fetch(apiUrl, {
     headers: {
@@ -120,96 +152,31 @@ async function fetchWithCookie(
       "X-Csrf-Token": csrfToken,
       "User-Agent": DEFAULT_UA,
       "Content-Type": "application/json",
+      "X-Twitter-Active-User": "yes",
+      "X-Twitter-Auth-Type": "OAuth2Session",
+      "X-Twitter-Client-Language": "en",
     },
   });
 
-  if (!resp.ok) {
-    throw new AppError(ErrorCodes.PARSE_FAILED, `Twitter API returned ${resp.status}`, {
-      detail: `Tweet ID: ${tweetId}`,
+  // If 404 "Query not found", the queryId has rotated — try to resolve dynamically
+  if (resp.status === 404) {
+    const body = await resp.text();
+    if (body.includes("Query not found")) {
+      const newId = await resolveQueryId();
+      if (newId && newId !== queryId) {
+        cachedQueryId = newId;
+        return fetchWithCookie(tweetId, cookie);
+      }
+    }
+    throw new AppError(ErrorCodes.PARSE_FAILED, `Twitter API returned 404`, {
+      detail: `Tweet ID: ${tweetId}. The GraphQL queryId may have changed.`,
     });
   }
 
-  const json = await resp.json();
-  return extractFromGraphQL(json, tweetId);
-}
-
-async function fetchWithGuestToken(
-  tweetId: string,
-): Promise<VideoParseResult> {
-  // Activate guest token
-  const activateResp = await fetch(
-    "https://api.twitter.com/1.1/guest/activate.json",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${BEARER_TOKEN}`,
-        "User-Agent": DEFAULT_UA,
-      },
-    },
-  );
-
-  if (!activateResp.ok) {
-    throw new AppError(
-      ErrorCodes.PARSE_FAILED,
-      "Failed to obtain Twitter guest token. Configure TWITTER_COOKIE for reliable access.",
-      { detail: `Status: ${activateResp.status}` },
-    );
-  }
-
-  const { guest_token } = (await activateResp.json()) as {
-    guest_token: string;
-  };
-
-  const variables = JSON.stringify({
-    tweetId,
-    withCommunity: false,
-    includePromotedContent: false,
-    withVoice: false,
-  });
-
-  const features = JSON.stringify({
-    creator_subscriptions_tweet_preview_api_enabled: true,
-    communities_web_enable_tweet_community_results_fetch: true,
-    c9s_tweet_anatomy_moderator_badge_enabled: true,
-    articles_preview_enabled: true,
-    responsive_web_edit_tweet_api_enabled: true,
-    graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
-    view_counts_everywhere_api_enabled: true,
-    longform_notetweets_consumption_enabled: true,
-    responsive_web_twitter_article_tweet_consumption_enabled: true,
-    tweet_awards_web_tipping_enabled: false,
-    creator_subscriptions_quote_tweet_preview_enabled: false,
-    freedom_of_speech_not_reach_fetch_enabled: true,
-    standardized_nudges_misinfo: true,
-    tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled:
-      true,
-    rweb_video_timestamps_enabled: true,
-    longform_notetweets_rich_text_read_enabled: true,
-    longform_notetweets_inline_media_enabled: true,
-    responsive_web_enhance_cards_enabled: false,
-    responsive_web_graphql_exclude_directive_enabled: true,
-    verified_phone_label_enabled: false,
-    responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
-    responsive_web_graphql_timeline_navigation_enabled: true,
-    responsive_web_media_download_video_enabled: true,
-  });
-
-  const params = new URLSearchParams({ variables, features });
-  const apiUrl = `https://x.com/i/api/graphql/xOhkmRac04YFZDOzVHpekA/TweetResultByRestId?${params}`;
-
-  const resp = await fetch(apiUrl, {
-    headers: {
-      Authorization: `Bearer ${BEARER_TOKEN}`,
-      "X-Guest-Token": guest_token,
-      "User-Agent": DEFAULT_UA,
-      "Content-Type": "application/json",
-    },
-  });
-
   if (!resp.ok) {
     throw new AppError(
       ErrorCodes.PARSE_FAILED,
-      `Twitter API returned ${resp.status}. Guest token may be restricted — configure TWITTER_COOKIE for better reliability.`,
+      `Twitter API returned ${resp.status}`,
       { detail: `Tweet ID: ${tweetId}` },
     );
   }
@@ -218,35 +185,76 @@ async function fetchWithGuestToken(
   return extractFromGraphQL(json, tweetId);
 }
 
+/**
+ * Dynamically resolve the current TweetResultByRestId queryId
+ * by fetching x.com's production JS bundle.
+ */
+async function resolveQueryId(): Promise<string | null> {
+  try {
+    const pageResp = await fetch("https://x.com", {
+      headers: { "User-Agent": DEFAULT_UA, Accept: "text/html" },
+      redirect: "follow",
+    });
+    const html = await pageResp.text();
+
+    // Find the main JS bundle URL
+    const jsMatch = html.match(
+      /src="(https:\/\/abs\.twimg\.com\/responsive-web\/client-web\/main\.[^"]+\.js)"/,
+    );
+    if (!jsMatch) return null;
+
+    const jsResp = await fetch(jsMatch[1], {
+      headers: { "User-Agent": DEFAULT_UA },
+    });
+    const js = await jsResp.text();
+
+    // Extract queryId for TweetResultByRestId
+    const idMatch = js.match(
+      /queryId:"([^"]+)",operationName:"TweetResultByRestId"/,
+    );
+    return idMatch?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function extractFromGraphQL(json: any, tweetId: string): VideoParseResult {
-  // Navigate the GraphQL response structure
   const tweetResult =
-    json?.data?.tweetResult?.result ??
-    json?.data?.tweet_result?.result;
+    json?.data?.tweetResult?.result ?? json?.data?.tweet_result?.result;
 
   if (!tweetResult) {
-    throw new AppError(ErrorCodes.VIDEO_NOT_FOUND, "Tweet not found", {
-      detail: `Tweet ID: ${tweetId}`,
-    });
+    throw new AppError(
+      ErrorCodes.VIDEO_NOT_FOUND,
+      "Tweet not found or not accessible. The tweet may have been deleted, or your TWITTER_COOKIE may have expired.",
+      { detail: `Tweet ID: ${tweetId}` },
+    );
   }
 
-  // Handle tombstone (deleted/private tweets)
   if (tweetResult.__typename === "TweetTombstone") {
-    throw new AppError(ErrorCodes.VIDEO_DELETED, "Tweet has been deleted or is not accessible");
+    throw new AppError(
+      ErrorCodes.VIDEO_DELETED,
+      "Tweet has been deleted or is not accessible",
+    );
   }
 
   // Unwrap "TweetWithVisibilityResults" wrapper
   const tweet = tweetResult.tweet ?? tweetResult;
   const legacy = tweet.legacy ?? tweet;
-  const user = tweet.core?.user_results?.result?.legacy;
+  const user = tweet.core?.user_results?.result?.legacy ??
+    tweet.core?.user_results?.result?.core;
 
   // Find video in extended_entities
   const media: TwitterMediaEntity[] =
     legacy?.extended_entities?.media ?? legacy?.entities?.media ?? [];
-  const videoMedia = media.find((m) => m.type === "video" || m.type === "animated_gif");
+  const videoMedia = media.find(
+    (m) => m.type === "video" || m.type === "animated_gif",
+  );
 
   if (!videoMedia || !videoMedia.video_info) {
-    throw new AppError(ErrorCodes.VIDEO_NOT_FOUND, "This tweet does not contain a video");
+    throw new AppError(
+      ErrorCodes.VIDEO_NOT_FOUND,
+      "This tweet does not contain a video",
+    );
   }
 
   const { variants, duration_millis } = videoMedia.video_info;
@@ -257,10 +265,14 @@ function extractFromGraphQL(json: any, tweetId: string): VideoParseResult {
     .sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
 
   if (mp4Variants.length === 0) {
-    throw new AppError(ErrorCodes.VIDEO_NOT_FOUND, "No downloadable MP4 video found in tweet");
+    throw new AppError(
+      ErrorCodes.VIDEO_NOT_FOUND,
+      "No downloadable MP4 video found in tweet",
+    );
   }
 
-  const title = legacy?.full_text?.split("\n")[0]?.slice(0, 100) ?? `Tweet ${tweetId}`;
+  const title =
+    legacy?.full_text?.split("\n")[0]?.slice(0, 100) ?? `Tweet ${tweetId}`;
   const author = user?.screen_name ?? undefined;
 
   return {
