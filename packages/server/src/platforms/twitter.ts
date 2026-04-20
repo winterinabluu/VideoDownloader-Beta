@@ -284,7 +284,7 @@ function extractFromGraphQL(json: any, tweetId: string): VideoParseResult {
     duration: duration_millis ? Math.round(duration_millis / 1000) : undefined,
     watermarkStatus: "no_watermark",
     videos: mp4Variants.map((v) => {
-      const qualityLabel = bitrateToQuality(v.bitrate ?? 0);
+      const qualityLabel = resolveQualityLabel(v.url, v.bitrate ?? 0);
       return {
         qualityLabel,
         bitrate: v.bitrate,
@@ -297,7 +297,20 @@ function extractFromGraphQL(json: any, tweetId: string): VideoParseResult {
   };
 }
 
-function bitrateToQuality(bitrate: number): string {
+/**
+ * Extract quality label from the video URL's resolution path segment,
+ * falling back to a bitrate-based estimate.
+ * Twitter URLs look like: .../vid/avc1/2400x2160/xxx.mp4
+ */
+function resolveQualityLabel(url: string, bitrate: number): string {
+  const resMatch = url.match(/\/(\d+)x(\d+)\//);
+  if (resMatch) {
+    const height = parseInt(resMatch[2], 10);
+    return `${height}p`;
+  }
+  // Fallback: estimate from bitrate
+  if (bitrate >= 10000000) return "2160p";
+  if (bitrate >= 4000000) return "1080p";
   if (bitrate >= 2000000) return "720p";
   if (bitrate >= 800000) return "360p";
   if (bitrate >= 300000) return "180p";
