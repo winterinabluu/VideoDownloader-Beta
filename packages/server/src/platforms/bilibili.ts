@@ -1,4 +1,4 @@
-import type { VideoParseResult, VideoVariant } from "@vd/shared";
+import type { VideoParseResult, VideoVariant, VideoFormat } from "@vd/shared";
 import type { PlatformParser } from "./base.js";
 import type { AppConfig } from "../config.js";
 import { AppError } from "../errors.js";
@@ -62,19 +62,35 @@ interface VideoInfoData {
   pages: VideoPage[];
 }
 
-interface DurlEntry {
-  url: string;
+interface DashTrack {
+  id: number; // qn for video, codec id for audio
+  baseUrl: string;
+  base_url: string;
+  backupUrl?: string[];
   backup_url?: string[];
-  size: number;
-  length: number; // milliseconds
-  order: number;
+  bandwidth: number;
+  width?: number;
+  height?: number;
+  codecs?: string;
+  mimeType?: string;
+  mime_type?: string;
 }
 
 interface PlayUrlData {
   quality: number;
   accept_quality: number[];
   accept_description: string[];
-  durl?: DurlEntry[];
+  dash?: {
+    video: DashTrack[];
+    audio: DashTrack[];
+  };
+  durl?: Array<{
+    url: string;
+    backup_url?: string[];
+    size: number;
+    length: number;
+    order: number;
+  }>;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -137,6 +153,7 @@ function extractVideoId(url: string): {
 
 function normalizeCoverUrl(pic: string): string {
   if (pic.startsWith("//")) return "https:" + pic;
+  if (pic.startsWith("http://")) return pic.replace("http://", "https://");
   return pic;
 }
 
@@ -195,20 +212,19 @@ async function fetchVideoInfo(
 }
 
 /**
- * Fetch play URL for a specific quality level.
- * Uses legacy MP4 mode (fnval=1) which returns muxed audio+video streams.
+ * Fetch play URL using DASH mode (fnval=16) which returns separate
+ * video and audio tracks at all available quality levels in one request.
  */
 async function fetchPlayUrl(
   bvid: string,
   cid: number,
-  qn: number,
   cookie?: string,
 ): Promise<PlayUrlData> {
   const params = new URLSearchParams({
     bvid,
     cid: String(cid),
-    qn: String(qn),
-    fnval: "1",
+    qn: "127",
+    fnval: "16",
     fourk: "1",
   });
 
@@ -248,6 +264,10 @@ async function fetchPlayUrl(
   }
 
   return json.data;
+}
+
+function getTrackUrl(track: DashTrack): string {
+  return track.baseUrl || track.base_url;
 }
 
 // ── Parser ───────────────────────────────────────────────────────────
@@ -326,69 +346,78 @@ export const bilibiliParser: PlatformParser = {
       title += ` (P${page.page} ${page.part})`;
     }
 
-    // Step 5: Discover available qualities, then fetch each in parallel
-    const discovery = await fetchPlayUrl(videoBvid, cid, 0, cookie);
-    const acceptQuality = discovery.accept_quality ?? [];
+    // Step 5: Fetch DASH streams (single request returns all qualities)
+    const playData = await fetchPlayUrl(videoBvid, cid, cookie);
 
-    if (acceptQuality.length === 0) {
-      throw new AppError(
-        ErrorCodes.VIDEO_NOT_FOUND,
-        "No available video qualities. The video may require login.",
-      );
+    // Step 6: Build video variants from DASH tracks
+    const variants: (VideoVariant & { _audioUrl?: string })[] = [];
+
+    if (playData.dash) {
+      const { video: videoTracks, audio: audioTracks } = playData.dash;
+
+      // Pick the best audio track (highest bandwidth)
+      const bestAudio = audioTracks
+        ?.slice()
+        .sort((a, b) => b.bandwidth - a.bandwidth)[0];
+      const audioUrl = bestAudio ? getTrackUrl(bestAudio) : undefined;
+
+      // Deduplicate video tracks: keep the highest bandwidth per qn (e.g. AVC over HEVC if larger)
+      const bestByQn = new Map<number, DashTrack>();
+      for (const vt of videoTracks ?? []) {
+        const existing = bestByQn.get(vt.id);
+        // Prefer AVC (avc1) for broadest compatibility; if same codec family, pick higher bandwidth
+        const isAvc = vt.codecs?.startsWith("avc") ?? false;
+        const existingIsAvc = existing?.codecs?.startsWith("avc") ?? false;
+        if (
+          !existing ||
+          (isAvc && !existingIsAvc) ||
+          (isAvc === existingIsAvc && vt.bandwidth > existing.bandwidth)
+        ) {
+          bestByQn.set(vt.id, vt);
+        }
+      }
+
+      for (const [qn, track] of bestByQn) {
+        const label = QN_LABELS[qn] ?? `${qn}`;
+        const codec = track.codecs?.split(".")[0]?.toUpperCase() ?? "";
+        const qualityLabel = codec ? `${label} · ${codec}` : label;
+
+        variants.push({
+          qualityLabel,
+          width: track.width,
+          height: track.height,
+          bitrate: track.bandwidth,
+          format: "mp4" as VideoFormat,
+          url: getTrackUrl(track),
+          hasAudio: !audioUrl, // true only if no separate audio (muxed)
+          hasVideo: true,
+          _audioUrl: audioUrl,
+        });
+      }
     }
 
-    // Fetch all qualities in parallel
-    const qualityResults = await Promise.all(
-      acceptQuality.map(async (qn) => {
-        try {
-          const data = await fetchPlayUrl(videoBvid, cid, qn, cookie);
-          return { qn, data };
-        } catch {
-          return null; // skip qualities that fail
-        }
-      }),
-    );
-
-    // Step 6: Build video variants
-    const variantEntries: Array<{ qn: number; variant: VideoVariant }> = [];
-    const seenQualities = new Set<number>();
-
-    for (const result of qualityResults) {
-      if (!result) continue;
-      const { data } = result;
-      const actualQn = data.quality;
-
-      // Deduplicate — the API may return the same actual quality for multiple requested qn
-      if (seenQualities.has(actualQn)) continue;
-      seenQualities.add(actualQn);
-
-      const durl = data.durl;
-      if (!durl || durl.length === 0) continue;
-
-      const entry = durl[0];
-      variantEntries.push({
-        qn: actualQn,
-        variant: {
-          qualityLabel: QN_LABELS[actualQn] ?? `${actualQn}`,
-          format: "mp4",
-          url: entry.url,
-          size: entry.size,
-          hasAudio: true,
-          hasVideo: true,
-        },
+    // Fallback: legacy durl mode (some old videos)
+    if (variants.length === 0 && playData.durl && playData.durl.length > 0) {
+      const entry = playData.durl[0];
+      variants.push({
+        qualityLabel: QN_LABELS[playData.quality] ?? `${playData.quality}`,
+        format: "mp4" as VideoFormat,
+        url: entry.url,
+        size: entry.size,
+        hasAudio: true,
+        hasVideo: true,
       });
     }
 
-    if (variantEntries.length === 0) {
+    if (variants.length === 0) {
       throw new AppError(
         ErrorCodes.VIDEO_NOT_FOUND,
         "No downloadable streams found. The video may require login for playback.",
       );
     }
 
-    // Sort by quality descending (higher qn = better quality)
-    variantEntries.sort((a, b) => b.qn - a.qn);
-    const variants = variantEntries.map((e) => e.variant);
+    // Sort by qn / bitrate descending (highest quality first)
+    variants.sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
 
     return {
       platform: "bilibili",

@@ -5,6 +5,7 @@ import { ErrorCodes } from "@vd/shared";
 
 interface DownloadToken {
   videoUrl: string;
+  audioUrl?: string;
   platform: string;
   filename: string;
   headers?: Record<string, string>;
@@ -27,6 +28,7 @@ setInterval(() => {
  */
 export function createDownloadToken(params: {
   videoUrl: string;
+  audioUrl?: string;
   platform: string;
   filename: string;
   headers?: Record<string, string>;

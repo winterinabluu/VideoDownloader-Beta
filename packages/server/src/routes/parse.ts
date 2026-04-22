@@ -51,12 +51,15 @@ app.post("/", async (c) => {
   const videosWithTokens = result.videos.map((v) => {
     const token = createDownloadToken({
       videoUrl: v.url,
+      audioUrl: (v as any)._audioUrl,
       platform: result.platform,
       filename: `${filename}_${v.qualityLabel}`,
       headers: platformHeaders,
     });
+    // Strip internal _audioUrl before sending to client
+    const { _audioUrl: _, ...cleanVariant } = v as any;
     return {
-      ...v,
+      ...cleanVariant,
       url: `/api/download?token=${token}`,
     };
   });
