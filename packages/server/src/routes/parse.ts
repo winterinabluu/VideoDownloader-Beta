@@ -6,6 +6,11 @@ import { detectPlatform } from "../platforms/registry.js";
 import { config } from "../config.js";
 import { createDownloadToken } from "../services/tokenStore.js";
 
+/** Headers that must accompany download requests for specific platforms (e.g. Referer). */
+const PLATFORM_DOWNLOAD_HEADERS: Record<string, Record<string, string>> = {
+  bilibili: { Referer: "https://www.bilibili.com" },
+};
+
 const app = new Hono();
 
 app.post("/", async (c) => {
@@ -42,11 +47,13 @@ app.post("/", async (c) => {
 
   // Replace raw video URLs with download tokens for security
   const filename = result.title ?? `video_${Date.now()}`;
+  const platformHeaders = PLATFORM_DOWNLOAD_HEADERS[result.platform];
   const videosWithTokens = result.videos.map((v) => {
     const token = createDownloadToken({
       videoUrl: v.url,
       platform: result.platform,
       filename: `${filename}_${v.qualityLabel}`,
+      headers: platformHeaders,
     });
     return {
       ...v,
