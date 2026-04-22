@@ -33,6 +33,7 @@ export function VideoInfo({ result }: VideoInfoProps) {
               alt="Video cover"
               className="h-auto w-full rounded-md object-cover sm:h-32 sm:w-56"
               loading="lazy"
+              referrerPolicy="no-referrer"
             />
           </div>
         )}
