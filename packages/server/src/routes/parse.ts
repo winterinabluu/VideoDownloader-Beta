@@ -49,15 +49,20 @@ app.post("/", async (c) => {
   const filename = result.title ?? `video_${Date.now()}`;
   const platformHeaders = PLATFORM_DOWNLOAD_HEADERS[result.platform];
   const videosWithTokens = result.videos.map((v) => {
+    // Per-variant headers (e.g. yt-dlp http_headers) take priority over platform-level
+    const variantHeaders = (v as any)._downloadHeaders as
+      | Record<string, string>
+      | undefined;
+    const headers = variantHeaders ?? platformHeaders;
     const token = createDownloadToken({
       videoUrl: v.url,
       audioUrl: (v as any)._audioUrl,
       platform: result.platform,
       filename: `${filename}_${v.qualityLabel}`,
-      headers: platformHeaders,
+      headers,
     });
-    // Strip internal _audioUrl before sending to client
-    const { _audioUrl: _, ...cleanVariant } = v as any;
+    // Strip internal properties before sending to client
+    const { _audioUrl: _a, _downloadHeaders: _h, ...cleanVariant } = v as any;
     return {
       ...cleanVariant,
       url: `/api/download?token=${token}`,
