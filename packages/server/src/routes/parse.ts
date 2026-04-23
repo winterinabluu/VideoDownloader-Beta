@@ -9,6 +9,7 @@ import { createDownloadToken } from "../services/tokenStore.js";
 /** Headers that must accompany download requests for specific platforms (e.g. Referer). */
 const PLATFORM_DOWNLOAD_HEADERS: Record<string, Record<string, string>> = {
   bilibili: { Referer: "https://www.bilibili.com" },
+  weibo: { Referer: "https://weibo.com/" },
 };
 
 const app = new Hono();

@@ -10,7 +10,7 @@
 | 小红书 | ✅ 已实现 | ✅ 支持 | 不需要 | 从页面 SSR 数据提取 originVideoKey |
 | Bilibili | ⏳ 预留 | 无水印 | 高清需要 | 推荐使用 API + ffmpeg 合并 |
 | YouTube | ⏳ 预留 | 无水印 | 部分视频需要 | 建议集成 yt-dlp |
-| 微博 | ⏳ 预留 | 可能 | 可能需要 | 需要进一步调研 |
+| 微博 | ✅ 已实现 | unknown | 公开视频自动 visitor cookie；受限内容需要 | AJAX API + 多清晰度 MP4 |
 | 抖音 | ⏳ 预留 | 可做 | 移动端 UA 可能需要 | 有无水印资源 |
 
 ---
@@ -134,19 +134,65 @@ Cookie 不是必需的，但某些内容（例如登录可见）可能需要。
 
 ---
 
-## 微博（待实现）
+## 微博
 
-### 建议策略
+### 实现状态：✅ 已实现
 
-1. 处理短链 `t.cn` 跳转
-2. 从微博正文页提取视频页 ID
-3. 调用 `weibo.com/tv/api/component` 获取播放地址
-4. 解析多清晰度 HLS/MP4 stream
+### 解析策略
 
-### 限制
+1. 处理短链 `t.cn` → 跟随 302 跳转获得完整 URL
+2. 从 URL 提取 bid/mid（标准帖子）或 fid（tv/show 页）
+3. fid 类型 URL 通过 `weibo.com/tv/api/component` 解析为 mid
+4. 调用 `weibo.com/ajax/statuses/show?id={id}` 获取帖子详情
+5. 从 `page_info.media_info.playback_list` 提取多清晰度 MP4 URL
+6. Fallback: 从 `media_info` 的扁平字段（`mp4_hd_url`, `stream_url` 等）提取
 
-- 部分视频限制登录后观看
-- 移动端 `m.weibo.cn` 和桌面端 `weibo.com` 结构不同
+### 认证方式
+
+**a) Visitor Cookie（默认，公开视频）**
+- 自动向 `passport.weibo.com/visitor/genvisitor` 请求临时访客凭证
+- 获取 `SUB` + `SUBP` Cookie，缓存 10 分钟
+- 无需用户配置，适用于所有公开视频
+
+**b) 用户 Cookie（受限内容）**
+- 通过 `WEIBO_COOKIE` 环境变量配置
+- 需要 `SUB` Cookie（从浏览器开发者工具复制）
+- 可访问仅粉丝可见等受限内容
+
+### 支持的 URL 格式
+
+| 格式 | 示例 |
+|------|------|
+| 桌面正文页 | `weibo.com/7827771738/N4xlMvjhI` |
+| 移动端 status | `m.weibo.cn/status/4189191225395228` |
+| 移动端 detail | `m.weibo.cn/detail/4189191225395228` |
+| TV 视频页 | `weibo.com/tv/show/1034:4797699866951785` |
+| video 子域 | `video.weibo.com/show?fid=1034:xxx` |
+| 短链 | `t.cn/xxxxx` |
+
+### 典型清晰度
+
+| label | 分辨率 |
+|-------|--------|
+| mp4_ld | 360p |
+| mp4_sd | 480p |
+| mp4_720p | 720p |
+| mp4_1080p | 1080p |
+
+### 请求头要求
+
+```
+Referer: https://weibo.com/
+User-Agent: Chrome UA
+Cookie: SUB=xxx; SUBP=yyy （visitor 自动获取或用户配置）
+```
+
+### 已知限制
+
+- 部分仅粉丝可见视频需要登录 Cookie
+- 不支持多视频帖子中的逐个提取（取首个视频）
+- 不支持直播/直播回放（HLS m3u8 格式）
+- Visitor cookie 流程可能因微博反爬更新而失效
 
 ---
 
