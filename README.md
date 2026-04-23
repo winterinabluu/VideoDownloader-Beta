@@ -1,12 +1,24 @@
 # Video Downloader
 
-网页端视频链接解析与下载工具，支持从 Twitter/X、小红书、B 站、YouTube、微博、抖音等平台提取视频链接并下载。
+网页端视频链接解析与下载工具，粘贴链接即可解析并下载视频。
+
+## 🎯 平台支持
+
+| 平台 | 状态 | 说明 |
+|------|------|------|
+| **Twitter / X** | ✅ 已完成 | GraphQL API 解析，需配置 Cookie |
+| **小红书** | ✅ 已完成 | 无水印下载，多编码格式（H.264/H.265/AV1） |
+| **Bilibili** | ✅ 已完成 | DASH 模式，支持 4K~360p 多清晰度，ffmpeg 音视频合并 |
+| **YouTube** | ✅ 已完成 | 基于 yt-dlp，DASH 分轨 + 自动配对最佳音频 |
+| **微博** | 🚧 开发中 | 已注册域名匹配，解析逻辑待实现 |
+| **抖音** | 🚧 开发中 | 已注册域名匹配，解析逻辑待实现 |
 
 ## ✨ 特性
 
 - 🔗 自动识别平台，粘贴链接即解析
-- 🎞️ 支持多清晰度选择，优先最高画质 MP4
+- 🎞️ 支持多清晰度选择，DASH 分轨自动合并
 - 💧 小红书无水印下载
+- 🎬 ffmpeg 实时合并音视频流（Bilibili / YouTube DASH 内容）
 - 📱 响应式布局，PC / 手机浏览器通用
 - 🧩 模块化解析器架构，方便扩展新平台
 - 🛡️ 内置 SSRF 防护、限流、下载 token 过期机制
@@ -22,23 +34,31 @@
 
 ```
 packages/
-├── shared/          # 共享类型 + 工具
+├── shared/            # 共享类型 + 工具
 │   └── src/
-│       ├── types/video.ts
-│       └── utils/url.ts
-├── server/          # 后端 API
+│       ├── types/video.ts       # 视频解析类型定义、API 契约
+│       └── utils/url.ts         # URL 校验、SSRF 防护、文件名处理
+├── server/            # 后端 API（Hono + Node.js）
 │   └── src/
-│       ├── platforms/   # 平台解析器（核心）
-│       ├── routes/      # parse / download / health
-│       ├── services/    # 下载代理 + token store
-│       └── middleware/  # 限流 + 错误处理
-└── web/             # 前端
+│       ├── platforms/           # 平台解析器（核心）
+│       │   ├── base.ts          #   PlatformParser 接口
+│       │   ├── registry.ts      #   解析器注册 + 平台检测
+│       │   ├── twitter.ts       #   Twitter/X 解析
+│       │   ├── xiaohongshu.ts   #   小红书解析
+│       │   ├── bilibili.ts      #   Bilibili 解析
+│       │   ├── youtube.ts       #   YouTube 解析
+│       │   ├── weibo.ts         #   微博（待实现）
+│       │   └── douyin.ts        #   抖音（待实现）
+│       ├── routes/              # parse / download / health
+│       ├── services/            # 下载代理 + token store + ffmpeg 合并
+│       └── middleware/          # 限流 + 错误处理
+└── web/               # 前端（React + Vite + Tailwind）
     └── src/
-        ├── components/
-        ├── hooks/
-        └── utils/
+        ├── components/          # LinkInput / VideoInfo / QualitySelector 等
+        ├── hooks/               # useVideoParser 状态管理
+        └── utils/               # API 客户端 + 下载逻辑
 docs/
-└── platform-research.md  # 平台调研
+└── platform-research.md         # 平台解析原理调研
 ```
 
 ## 🚀 本地开发
@@ -47,8 +67,8 @@ docs/
 
 - Node.js 18+
 - pnpm 9+（`npm i -g pnpm`）
-- 可选：ffmpeg（音视频合并）
-- 可选：yt-dlp（YouTube 支持）
+- ffmpeg — 音视频合并（Bilibili / YouTube DASH 内容需要）
+- yt-dlp — YouTube 支持
 
 ### 2. 安装依赖
 
@@ -92,9 +112,9 @@ pnpm test
 | `PORT` | 后端端口 | 3000 |
 | `FRONTEND_URL` | 前端来源（CORS）| http://localhost:5173 |
 | `TWITTER_COOKIE` | Twitter 登录 Cookie（强烈推荐）| - |
-| `XIAOHONGSHU_COOKIE` | 小红书 Cookie（可选）| - |
-| `BILIBILI_COOKIE` | B 站 SESSDATA（高清需要）| - |
-| `YOUTUBE_COOKIES` | YouTube Cookies 文件路径 | - |
+| `XIAOHONGSHU_COOKIE` | 小红书 Cookie | - |
+| `BILIBILI_COOKIE` | B 站 SESSDATA（高清需要登录）| - |
+| `YOUTUBE_COOKIES` | YouTube Netscape Cookies 文件路径 | - |
 | `FFMPEG_PATH` | ffmpeg 可执行文件路径 | ffmpeg |
 | `YTDLP_PATH` | yt-dlp 可执行文件路径 | yt-dlp |
 | `DOWNLOAD_CACHE_TTL_SECONDS` | 下载 token 过期秒数 | 600 |
@@ -154,9 +174,9 @@ pnpm test
 
 ## 🚢 部署
 
-### Docker 部署（推荐，待补充）
+### Docker 部署（待补充）
 
-项目会提供 Dockerfile 一键部署，届时 ffmpeg / yt-dlp 会一并打包。
+计划提供 Dockerfile 一键部署，ffmpeg / yt-dlp 会一并打包。
 
 ### 手动部署
 
@@ -184,7 +204,6 @@ pnpm --filter @vd/web build
 ## 📚 延伸阅读
 
 - [docs/platform-research.md](docs/platform-research.md) — 各平台解析原理与限制
-- 需求文档：`G:\CodeX\OpenAIDefault\需求.md`（本地）
 
 ## 📄 许可
 
