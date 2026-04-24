@@ -12,6 +12,23 @@ const PLATFORM_DOWNLOAD_HEADERS: Record<string, Record<string, string>> = {
   weibo: { Referer: "https://weibo.com/" },
 };
 
+/** CDN domains whose cover images need server-side proxying due to hotlink protection. */
+const PROXY_COVER_DOMAINS = ["sinaimg.cn"];
+
+/** Rewrite cover URL to go through our proxy if it needs hotlink bypass. */
+function proxyCoverUrl(coverUrl: string | undefined): string | undefined {
+  if (!coverUrl) return coverUrl;
+  try {
+    const hostname = new URL(coverUrl).hostname;
+    if (PROXY_COVER_DOMAINS.some((d) => hostname.endsWith(d))) {
+      return `/api/cover?url=${encodeURIComponent(coverUrl)}`;
+    }
+  } catch {
+    // invalid URL — return as-is
+  }
+  return coverUrl;
+}
+
 const app = new Hono();
 
 app.post("/", async (c) => {
@@ -72,7 +89,7 @@ app.post("/", async (c) => {
 
   return c.json({
     ok: true,
-    data: { ...result, videos: videosWithTokens },
+    data: { ...result, coverUrl: proxyCoverUrl(result.coverUrl), videos: videosWithTokens },
   });
 });
 

@@ -15,6 +15,7 @@ import { rateLimit } from "./middleware/rateLimit.js";
 import { healthRoute } from "./routes/health.js";
 import { parseRoute } from "./routes/parse.js";
 import { downloadRoute } from "./routes/download.js";
+import { coverRoute } from "./routes/cover.js";
 
 const app = new Hono();
 
@@ -41,6 +42,7 @@ app.use(
 app.route("/api/health", healthRoute);
 app.route("/api/parse", parseRoute);
 app.route("/api/download", downloadRoute);
+app.route("/api/cover", coverRoute);
 
 app.onError(errorHandler);
 
