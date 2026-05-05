@@ -196,21 +196,34 @@ Cookie: SUB=xxx; SUBP=yyy （visitor 自动获取或用户配置）
 
 ---
 
-## 抖音（待实现）
+## 抖音（已实现 — yt-dlp 集成）
 
-### 建议策略
+### 实现方式
 
-1. 短链 `v.douyin.com` 跟随 302 获得 aweme_id
-2. 调用 `www.douyin.com/aweme/v1/web/aweme/detail/` 接口
-3. 从 `video.play_addr.url_list` 拿到播放地址
-4. 替换 `playwm` → `play` 即为无水印版本
+采用 yt-dlp 集成方案（与 YouTube 共用 `ytdlp.ts` 共享模块），避免直接对接抖音反爬接口。
+
+1. yt-dlp `--dump-json` 获取视频元数据和下载 URL
+2. 筛选 `protocol=https` 的 muxed MP4 格式
+3. 按分辨率去重，保留最高码率
+4. yt-dlp 自动处理无水印版本
+
+### 支持的 URL 格式
+
+- `v.douyin.com/*` — 短链接（最常见的分享格式）
+- `www.douyin.com/video/*` — 标准视频链接
+
+### Cookie 配置
+
+通过 `DOUYIN_COOKIE` 环境变量配置，用于需要登录才能访问的内容。
+
+### 依赖
+
+- yt-dlp 必须已安装（`YTDLP_PATH` 在 `.env` 中配置）
 
 ### 限制
 
-- 对 User-Agent 敏感（建议使用移动端 UA）
-- 需要特定 Referer
-- 部分接口需要签名参数（_signature）
-- 抖音反爬策略更新频繁
+- 依赖 yt-dlp 社区维护抖音适配，yt-dlp 版本需保持更新
+- 抖音反爬策略更新频繁，yt-dlp 可能偶尔滞后
 
 ---
 

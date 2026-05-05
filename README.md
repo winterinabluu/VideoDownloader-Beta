@@ -10,8 +10,8 @@
 | **小红书** | ✅ 已完成 | 无水印下载，多编码格式（H.264/H.265/AV1） |
 | **Bilibili** | ✅ 已完成 | DASH 模式，支持 4K~360p 多清晰度，ffmpeg 音视频合并 |
 | **YouTube** | ✅ 已完成 | 基于 yt-dlp，DASH 分轨 + 自动配对最佳音频 |
-| **微博** | 🚧 开发中 | 已注册域名匹配，解析逻辑待实现 |
-| **抖音** | 🚧 开发中 | 已注册域名匹配，解析逻辑待实现 |
+| **微博** | ✅ 已完成 | AJAX API，访客 Cookie 自动获取，多清晰度 MP4 |
+| **抖音** | ✅ 已完成 | 基于 yt-dlp，无水印下载，多清晰度 |
 
 ## ✨ 特性
 
@@ -46,9 +46,10 @@ packages/
 │       │   ├── twitter.ts       #   Twitter/X 解析
 │       │   ├── xiaohongshu.ts   #   小红书解析
 │       │   ├── bilibili.ts      #   Bilibili 解析
-│       │   ├── youtube.ts       #   YouTube 解析
-│       │   ├── weibo.ts         #   微博（待实现）
-│       │   └── douyin.ts        #   抖音（待实现）
+│       │   ├── youtube.ts       #   YouTube 解析（yt-dlp）
+│       │   ├── weibo.ts         #   微博解析
+│       │   ├── douyin.ts        #   抖音解析（yt-dlp）
+│       │   └── ytdlp.ts         #   yt-dlp 共享运行器
 │       ├── routes/              # parse / download / health
 │       ├── services/            # 下载代理 + token store + ffmpeg 合并
 │       └── middleware/          # 限流 + 错误处理
@@ -115,6 +116,8 @@ pnpm test
 | `XIAOHONGSHU_COOKIE` | 小红书 Cookie | - |
 | `BILIBILI_COOKIE` | B 站 SESSDATA（高清需要登录）| - |
 | `YOUTUBE_COOKIES` | YouTube Netscape Cookies 文件路径 | - |
+| `WEIBO_COOKIE` | 微博 Cookie（受限内容需要）| - |
+| `DOUYIN_COOKIE` | 抖音 Cookie（受限内容需要）| - |
 | `FFMPEG_PATH` | ffmpeg 可执行文件路径 | ffmpeg |
 | `YTDLP_PATH` | yt-dlp 可执行文件路径 | yt-dlp |
 | `DOWNLOAD_CACHE_TTL_SECONDS` | 下载 token 过期秒数 | 600 |
