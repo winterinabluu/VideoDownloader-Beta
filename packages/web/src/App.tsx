@@ -8,11 +8,12 @@ import { ErrorMessage } from "./components/ErrorMessage";
 
 function App() {
   const { result, loading, error, parse, reset } = useVideoParser();
+  const [url, setUrl] = useState("");
   const [selectedQuality, setSelectedQuality] = useState(0);
 
-  const handleParse = (url: string) => {
+  const handleParse = (u: string) => {
     setSelectedQuality(0);
-    parse(url);
+    parse(u);
   };
 
   const handleReset = () => {
@@ -25,7 +26,6 @@ function App() {
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="mx-auto max-w-2xl px-4 py-8 sm:py-16">
-        {/* Header */}
         <div className="mb-8 text-center">
           <h1 className="text-3xl font-bold text-gray-900 sm:text-4xl">
             Video Downloader
@@ -35,23 +35,22 @@ function App() {
           </p>
         </div>
 
-        {/* Input */}
         <div className="mb-6">
           <LinkInput
+            value={url}
+            onChange={setUrl}
             onSubmit={handleParse}
             loading={loading}
             onReset={handleReset}
           />
         </div>
 
-        {/* Error */}
         {error && (
           <div className="mb-6">
             <ErrorMessage message={error} />
           </div>
         )}
 
-        {/* Results */}
         {result && (
           <div className="flex flex-col gap-4">
             <VideoInfo result={result} />
@@ -79,7 +78,6 @@ function App() {
           </div>
         )}
 
-        {/* Footer */}
         <div className="mt-12 text-center text-xs text-gray-400">
           <p>For personal use only. Respect content creators' rights.</p>
         </div>

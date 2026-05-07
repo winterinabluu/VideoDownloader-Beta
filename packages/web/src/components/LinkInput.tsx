@@ -1,24 +1,28 @@
-import { useState } from "react";
-
 interface LinkInputProps {
+  value: string;
+  onChange: (url: string) => void;
   onSubmit: (url: string) => void;
   loading: boolean;
   onReset: () => void;
 }
 
-export function LinkInput({ onSubmit, loading, onReset }: LinkInputProps) {
-  const [url, setUrl] = useState("");
-
+export function LinkInput({
+  value,
+  onChange,
+  onSubmit,
+  loading,
+  onReset,
+}: LinkInputProps) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = url.trim();
+    const trimmed = value.trim();
     if (trimmed) {
       onSubmit(trimmed);
     }
   };
 
   const handleClear = () => {
-    setUrl("");
+    onChange("");
     onReset();
   };
 
@@ -28,8 +32,8 @@ export function LinkInput({ onSubmit, loading, onReset }: LinkInputProps) {
         <div className="relative flex-1">
           <input
             type="text"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
             placeholder="Paste video link here..."
             className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base
                        outline-none transition-colors
@@ -37,7 +41,7 @@ export function LinkInput({ onSubmit, loading, onReset }: LinkInputProps) {
                        disabled:bg-gray-100"
             disabled={loading}
           />
-          {url && (
+          {value && (
             <button
               type="button"
               onClick={handleClear}
@@ -51,7 +55,7 @@ export function LinkInput({ onSubmit, loading, onReset }: LinkInputProps) {
         </div>
         <button
           type="submit"
-          disabled={loading || !url.trim()}
+          disabled={loading || !value.trim()}
           className="rounded-lg bg-blue-600 px-6 py-3 text-base font-medium text-white
                      transition-colors hover:bg-blue-700
                      disabled:cursor-not-allowed disabled:opacity-50
