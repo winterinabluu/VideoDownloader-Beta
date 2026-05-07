@@ -1,17 +1,22 @@
 import type { VideoVariant } from "@vd/shared";
 import { downloadFile, isMobile } from "../utils/download";
+import { markDownloaded } from "../utils/history";
 
 interface DownloadButtonProps {
   video: VideoVariant;
   title?: string;
+  sourceUrl?: string;
 }
 
-export function DownloadButton({ video, title }: DownloadButtonProps) {
+export function DownloadButton({ video, title, sourceUrl }: DownloadButtonProps) {
   const filename = title
     ? `${title}_${video.qualityLabel}`
     : `video_${video.qualityLabel}`;
 
   const handleClick = () => {
+    if (sourceUrl) {
+      markDownloaded(sourceUrl, video.qualityLabel);
+    }
     downloadFile(video.url, filename);
   };
 

@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import type { VideoParseResult } from "@vd/shared";
 import { parseVideo } from "../utils/api";
+import { recordParse } from "../utils/history";
 
 interface UseVideoParserReturn {
   result: VideoParseResult | null;
@@ -24,6 +25,7 @@ export function useVideoParser(): UseVideoParserReturn {
       const resp = await parseVideo(url);
       if (resp.ok) {
         setResult(resp.data);
+        recordParse({ url, result: resp.data });
       } else {
         setError(resp.error.message);
       }
