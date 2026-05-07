@@ -7,8 +7,9 @@ import {
   recordParse,
   removeEntry,
   subscribe,
-  __STORAGE_KEY,
   __MAX_ENTRIES,
+  __STORAGE_KEY,
+  __resetCache,
 } from "../src/utils/history";
 
 function fakeResult(over: Partial<VideoParseResult> = {}): VideoParseResult {
@@ -30,6 +31,7 @@ function fakeResult(over: Partial<VideoParseResult> = {}): VideoParseResult {
 describe("history storage", () => {
   beforeEach(() => {
     localStorage.clear();
+    __resetCache();
     vi.useRealTimers();
   });
 
@@ -156,5 +158,20 @@ describe("history storage", () => {
       recordParse({ url: "https://a", result: fakeResult() }),
     ).not.toThrow();
     spy.mockRestore();
+  });
+
+  it("listHistory returns the SAME reference between calls (useSyncExternalStore contract)", () => {
+    recordParse({ url: "https://a", result: fakeResult() });
+    const r1 = listHistory();
+    const r2 = listHistory();
+    expect(r1).toBe(r2);
+  });
+
+  it("listHistory returns a NEW reference after a mutation", () => {
+    recordParse({ url: "https://a", result: fakeResult() });
+    const r1 = listHistory();
+    recordParse({ url: "https://b", result: fakeResult() });
+    const r2 = listHistory();
+    expect(r1).not.toBe(r2);
   });
 });

@@ -21,6 +21,26 @@ export interface HistoryEntry {
 type Listener = () => void;
 const listeners = new Set<Listener>();
 
+// Cached sorted snapshot. listHistory() must return the same reference until a
+// mutation happens — useSyncExternalStore (used by useHistory) compares
+// snapshots with Object.is on every render, and a fresh array each call would
+// trigger an infinite re-render under React 18 StrictMode.
+let cachedSorted: HistoryEntry[] | null = null;
+
+function invalidateAndNotify(): void {
+  cachedSorted = null;
+  for (const l of listeners) l();
+}
+
+// Single global listener for cross-tab updates. Installed once at module load,
+// rather than per-subscriber, so multiple subscribers share one handler and we
+// invalidate the cache exactly once per cross-tab event.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key === __STORAGE_KEY) invalidateAndNotify();
+  });
+}
+
 function read(): HistoryEntry[] {
   try {
     const raw = localStorage.getItem(__STORAGE_KEY);
@@ -44,9 +64,9 @@ function write(entries: HistoryEntry[]): void {
   } catch (err) {
     console.warn("[history] write failed:", err);
   }
-  // Notify even if setItem threw: subscribers may want to re-render based on
-  // whatever listHistory() now returns (pre-failure state).
-  for (const l of listeners) l();
+  // Invalidate even if setItem threw: subscribers may want to re-render based
+  // on whatever listHistory() now returns (pre-failure state).
+  invalidateAndNotify();
 }
 
 function genId(): string {
@@ -57,7 +77,10 @@ function genId(): string {
 }
 
 export function listHistory(): HistoryEntry[] {
-  return read().slice().sort((a, b) => b.parsedAt - a.parsedAt);
+  if (cachedSorted === null) {
+    cachedSorted = read().slice().sort((a, b) => b.parsedAt - a.parsedAt);
+  }
+  return cachedSorted;
 }
 
 export function recordParse(input: {
@@ -114,21 +137,17 @@ export function clearAll(): void {
   write([]);
 }
 
+/** Test-only: drop the cached snapshot so the next read pulls from localStorage. */
+export function __resetCache(): void {
+  cachedSorted = null;
+}
+
 /**
  * Register a listener that fires after any mutation (in this tab or another tab).
- *
- * Note: calling subscribe() twice with the SAME function reference deduplicates
- * the in-tab path (Set semantics) but registers the cross-tab `storage` handler
- * twice. Prefer registering a given listener only once.
  */
 export function subscribe(listener: Listener): () => void {
   listeners.add(listener);
-  const onStorage = (e: StorageEvent) => {
-    if (e.key === __STORAGE_KEY) listener();
-  };
-  window.addEventListener("storage", onStorage);
   return () => {
     listeners.delete(listener);
-    window.removeEventListener("storage", onStorage);
   };
 }
