@@ -1,5 +1,7 @@
 import type { Platform, VideoParseResult } from "@vd/shared";
 
+// The __-prefixed exports below are the storage key and cap exposed for tests.
+// Callers outside tests should use the public functions (listHistory, recordParse, ...).
 export const __STORAGE_KEY = "vd_history_v1";
 export const __MAX_ENTRIES = 500;
 
@@ -42,6 +44,8 @@ function write(entries: HistoryEntry[]): void {
   } catch (err) {
     console.warn("[history] write failed:", err);
   }
+  // Notify even if setItem threw: subscribers may want to re-render based on
+  // whatever listHistory() now returns (pre-failure state).
   for (const l of listeners) l();
 }
 
@@ -110,6 +114,13 @@ export function clearAll(): void {
   write([]);
 }
 
+/**
+ * Register a listener that fires after any mutation (in this tab or another tab).
+ *
+ * Note: calling subscribe() twice with the SAME function reference deduplicates
+ * the in-tab path (Set semantics) but registers the cross-tab `storage` handler
+ * twice. Prefer registering a given listener only once.
+ */
 export function subscribe(listener: Listener): () => void {
   listeners.add(listener);
   const onStorage = (e: StorageEvent) => {

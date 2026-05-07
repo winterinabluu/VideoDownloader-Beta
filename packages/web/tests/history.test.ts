@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VideoParseResult } from "@vd/shared";
 import {
   clearAll,
@@ -30,6 +30,10 @@ function fakeResult(over: Partial<VideoParseResult> = {}): VideoParseResult {
 describe("history storage", () => {
   beforeEach(() => {
     localStorage.clear();
+    vi.useRealTimers();
+  });
+
+  afterEach(() => {
     vi.useRealTimers();
   });
 
