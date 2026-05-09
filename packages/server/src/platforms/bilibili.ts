@@ -351,6 +351,7 @@ export const bilibiliParser: PlatformParser = {
 
     // Step 6: Build video variants from DASH tracks
     const variants: (VideoVariant & { _audioUrl?: string })[] = [];
+    const warnings: string[] = [];
 
     if (playData.dash) {
       const { video: videoTracks, audio: audioTracks } = playData.dash;
@@ -419,6 +420,25 @@ export const bilibiliParser: PlatformParser = {
     // Sort by qn / bitrate descending (highest quality first)
     variants.sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
 
+    // Diagnose quality gap: if Bilibili says higher qualities exist (accept_quality
+    // includes them) but DASH only delivered lower ones, the request was treated
+    // as anonymous — most commonly because BILIBILI_COOKIE is missing or its
+    // SESSDATA expired. Surface this as a non-fatal warning.
+    const deliveredMaxQn = Math.max(
+      0,
+      ...(playData.dash?.video ?? []).map((v) => v.id),
+    );
+    const accessibleMaxQn = Math.max(0, ...(playData.accept_quality ?? []));
+    if (accessibleMaxQn > deliveredMaxQn && deliveredMaxQn > 0) {
+      const accessibleLabel = QN_LABELS[accessibleMaxQn] ?? `qn=${accessibleMaxQn}`;
+      const deliveredLabel = QN_LABELS[deliveredMaxQn] ?? `qn=${deliveredMaxQn}`;
+      warnings.push(
+        cookie
+          ? `B 站只下发了 ${deliveredLabel} 及以下，但视频实际有 ${accessibleLabel}。BILIBILI_COOKIE 中的 SESSDATA 可能已过期，请重新获取。`
+          : `B 站当前未登录，最高只能拿到 ${deliveredLabel}（视频实际有 ${accessibleLabel}）。在 packages/server/.env 配置 BILIBILI_COOKIE=SESSDATA=… 可解锁高清。`,
+      );
+    }
+
     return {
       platform: "bilibili",
       sourceUrl: url,
@@ -428,6 +448,7 @@ export const bilibiliParser: PlatformParser = {
       duration: info.duration,
       watermarkStatus: "no_watermark",
       videos: variants,
+      warnings: warnings.length > 0 ? warnings : undefined,
     };
   },
 };

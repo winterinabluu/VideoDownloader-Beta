@@ -43,6 +43,8 @@ export interface VideoParseResult {
   duration?: number;
   watermarkStatus: WatermarkStatus;
   videos: VideoVariant[];
+  /** Optional non-fatal notices (e.g. "cookie missing, higher qualities unavailable"). */
+  warnings?: string[];
 }
 
 /** API request body for /api/parse */

@@ -7,6 +7,7 @@ import { DownloadButton } from "./components/DownloadButton";
 import { ErrorMessage } from "./components/ErrorMessage";
 import { HistoryButton } from "./components/HistoryButton";
 import { HistoryDrawer } from "./components/HistoryDrawer";
+import { WarningBanner } from "./components/WarningBanner";
 
 function App() {
   const { result, loading, error, parse, reset } = useVideoParser();
@@ -70,6 +71,10 @@ function App() {
         {result && (
           <div className="flex flex-col gap-4">
             <VideoInfo result={result} />
+
+            {result.warnings && result.warnings.length > 0 && (
+              <WarningBanner warnings={result.warnings} />
+            )}
 
             {result.videos.length > 0 && (
               <>
